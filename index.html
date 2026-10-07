@@ -164,8 +164,6 @@
   function onYouTubeIframeAPIReady() {
     yt = new YT.Player('yt', {
       width: '100%', height: '100%',
-      // Privacy-Enhanced Mode: ฝังผ่าน youtube-nocookie.com (ลดการติดตามเพื่อยิงโฆษณาตรงกลุ่ม ไม่ได้การันตีว่าไม่มีโฆษณา)
-      host: 'https://www.youtube-nocookie.com',
       playerVars: { origin: location.origin, controls: 0, disablekb: 1, modestbranding: 1, rel: 0, iv_load_policy: 3, playsinline: 1, fs: 0 },
       events: {
         onReady: () => { ytReady = true; sync(); },
