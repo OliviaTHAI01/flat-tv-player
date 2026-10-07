@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+  #player { position: absolute; inset: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<div id="player"></div>
+<script>
+  // หน้านี้ถูกโหลดใน DUI ของแต่ละจอ (1 จอ = 1 หน้า) รับคำสั่งผ่าน SendDuiMessage จาก client/main.lua
+  let player = null, ready = false, pending = null, current = null;
+
+  function apply(s) {
+    if (!ready) { pending = s; return; }
+    player.setVolume(s.volume);
+    if (s.volume === 0) player.mute(); else player.unMute();
+    if (current !== s.video) {
+      current = s.video;
+      if (s.playing) player.loadVideoById({ videoId: s.video, startSeconds: s.pos });
+      else player.cueVideoById({ videoId: s.video, startSeconds: s.pos });
+      return;
+    }
+    const drift = Math.abs(player.getCurrentTime() - s.pos);
+    if (drift > 2.5) player.seekTo(s.pos, true);
+    const st = player.getPlayerState();
+    if (s.playing && st !== 1 && st !== 3) player.playVideo();
+    if (!s.playing && st === 1) player.pauseVideo();
+  }
+
+  window.addEventListener('message', (e) => {
+    const d = e.data;
+    if (d && d.type === 'state') apply(d);
+  });
+
+  function onYouTubeIframeAPIReady() {
+    player = new YT.Player('player', {
+      width: '100%', height: '100%',
+      playerVars: { origin: location.origin, controls: 0, disablekb: 1, modestbranding: 1, rel: 0, iv_load_policy: 3, playsinline: 1, fs: 0 },
+      events: {
+        onReady: () => { ready = true; if (pending) { apply(pending); pending = null; } },
+        onStateChange: (e) => { if (e.data === 0) { /* จบวิดีโอ */ } },
+      },
+    });
+  }
+</script>
+<script src="https://www.youtube.com/iframe_api"></script>
+</body>
+</html>
