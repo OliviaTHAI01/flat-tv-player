@@ -4,13 +4,15 @@
 <meta charset="utf-8">
 <style>
   html, body { margin: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
-  #yt, #file { position: absolute; inset: 0; width: 100%; height: 100%; display: none; }
+  /* YT.Player แทนที่ div#yt ด้วย iframe จึงสลับแสดง/ซ่อนที่กล่องครอบ #ytbox (ถ้าซ่อนที่ #yt ตรง ๆ iframe จะค้างเป็น display:none จอดำทั้งที่เสียงเล่นอยู่) */
+  #ytbox, #file { position: absolute; inset: 0; width: 100%; height: 100%; display: none; }
+  #ytbox iframe { width: 100%; height: 100%; border: 0; }
   /* contain = เห็นภาพครบไม่ตัดขอบ / fill = ยืดเต็มจอพอดีเป๊ะ / cover = เต็มจอแต่ตัดขอบ */
   #file { background: #000; object-fit: contain; }
 </style>
 </head>
 <body>
-<div id="yt"></div>
+<div id="ytbox"><div id="yt"></div></div>
 <video id="file" playsinline></video>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
 <script>
@@ -23,7 +25,7 @@
   const DRIFT = 2.0;          // เหลื่อมเกินนี้ (วินาที) ถึงจะ seek
   const SEEK_COOLDOWN = 4000; // ms กัน seek รัว ๆ ตอนเน็ตช้า
 
-  const ytEl = document.getElementById('yt');
+  const ytEl = document.getElementById('ytbox'); // กล่องครอบ (ไม่ใช่ #yt ที่ถูก YT.Player แทนที่ด้วย iframe)
   const vid = document.getElementById('file');
 
   let yt = null, ytReady = false;
