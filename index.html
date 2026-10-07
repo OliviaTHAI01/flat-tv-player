@@ -4,21 +4,32 @@
 <meta charset="utf-8">
 <style>
   html, body { margin: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
-  #player { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #yt, #file { position: absolute; inset: 0; width: 100%; height: 100%; display: none; }
+  /* contain = เห็นภาพครบไม่ตัดขอบ / fill = ยืดเต็มจอพอดีเป๊ะ / cover = เต็มจอแต่ตัดขอบ */
+  #file { background: #000; object-fit: contain; }
 </style>
 </head>
 <body>
-<div id="player"></div>
+<div id="yt"></div>
+<video id="file" playsinline></video>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
 <script>
   // หน้านี้ถูกโหลดใน DUI ของแต่ละจอ (1 จอ = 1 หน้า) รับคำสั่งผ่าน SendDuiMessage จาก client/main.lua
+  // รองรับ 2 ชนิด: kind = 'yt' (YouTube) และ 'file' (ลิงก์ตรง .mp4 .webm .ogg .m3u8 ไม่มีโฆษณา)
   //
   // sync: server ส่งมาแค่ "ตอนนี้วิดีโออยู่วินาทีที่ pos และกำลังเล่นหรือไม่"
-  // หน้านี้จำเวลาที่รับข้อความไว้ (target.t) แล้วคำนวณตำแหน่งที่ควรเป็น ณ ตอนนี้เองทุกวินาที
-  // ไม่ว่าจะโหลด YouTube ช้าแค่ไหน (คนเพิ่งเข้าเกม) หรือ buffer ค้าง ก็จะถูกดึงให้ตรงกับคนอื่น
+  // หน้านี้จำเวลาที่รับข้อความ (target.t) แล้วคำนวณตำแหน่งที่ควรเป็น ณ ตอนนี้เองทุกวินาที
+  // ไม่ว่าจะโหลดช้าแค่ไหน (คนเพิ่งเข้าเกม) หรือ buffer ค้าง ก็จะถูกดึงให้ตรงกับคนอื่น
   const DRIFT = 2.0;          // เหลื่อมเกินนี้ (วินาที) ถึงจะ seek
   const SEEK_COOLDOWN = 4000; // ms กัน seek รัว ๆ ตอนเน็ตช้า
 
-  let player = null, ready = false, current = null, target = null;
+  const ytEl = document.getElementById('yt');
+  const vid = document.getElementById('file');
+
+  let yt = null, ytReady = false;
+  let hls = null;
+  let current = null;        // 'kind:video' ที่โหลดอยู่
+  let target = null;
   let lastSeek = 0, lastVol = null;
 
   function expected() {
@@ -26,69 +37,136 @@
     return target.playing ? target.pos + (Date.now() - target.t) / 1000 : target.pos;
   }
 
-  function seek(pos) {
+  // ---------- ชนิดไฟล์ตรง (<video>)
+  function loadFile(url, pos) {
+    if (hls) { hls.destroy(); hls = null; }
+    if (/\.m3u8(\?|#|$)/i.test(url) && window.Hls && Hls.isSupported()) {
+      hls = new Hls();
+      hls.loadSource(url);
+      hls.attachMedia(vid);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => { try { if (isFinite(vid.duration)) vid.currentTime = pos; } catch (e) {} });
+    } else {
+      vid.src = url;
+      vid.addEventListener('loadedmetadata', function once() {
+        vid.removeEventListener('loadedmetadata', once);
+        if (isFinite(vid.duration)) vid.currentTime = Math.min(pos, Math.max(0, vid.duration - 0.5));
+      });
+    }
     lastSeek = Date.now();
-    player.seekTo(pos, true);
   }
 
-  function sync() {
-    if (!ready || !target) return;
+  function playFile() {
+    const p = vid.play();
+    if (p && p.catch) p.catch(() => { vid.muted = true; vid.play().catch(() => {}); });
+  }
 
-    if (lastVol !== target.volume) {
-      lastVol = target.volume;
-      player.setVolume(target.volume);
-      if (target.volume === 0) player.mute(); else player.unMute();
-    }
+  function syncFile(pos) {
+    vid.volume = Math.min(1, Math.max(0, target.volume / 100));
+    vid.muted = target.volume === 0;
 
-    const pos = expected();
+    const live = !isFinite(vid.duration); // สตรีมสด ไม่มีตำแหน่งให้ seek
+    const cooled = Date.now() - lastSeek > SEEK_COOLDOWN;
 
-    if (current !== target.video) {
-      current = target.video;
-      if (target.playing) player.loadVideoById({ videoId: current, startSeconds: pos });
-      else player.cueVideoById({ videoId: current, startSeconds: pos });
-      lastSeek = Date.now();
+    if (!live && vid.duration > 0 && pos >= vid.duration - 0.5) {
+      if (!vid.paused) vid.pause();
       return;
     }
+    if (target.playing) {
+      if (vid.paused) playFile();
+      if (!live && cooled && Math.abs(vid.currentTime - pos) > DRIFT) {
+        lastSeek = Date.now();
+        vid.currentTime = pos;
+      }
+    } else {
+      if (!vid.paused) vid.pause();
+      if (!live && cooled && Math.abs(vid.currentTime - pos) > 0.5) {
+        lastSeek = Date.now();
+        vid.currentTime = pos;
+      }
+    }
+  }
 
-    const st = player.getPlayerState(); // -1 ยังไม่เริ่ม, 0 จบ, 1 เล่น, 2 หยุด, 3 buffer, 5 cued
-    const dur = player.getDuration();
-    // เลยความยาววิดีโอแล้ว (เช่นคนเข้าทีหลังตอนวิดีโอจบไปแล้ว) ไม่ต้อง seek ปล่อยให้ค้างที่จบ
+  // ---------- ชนิด YouTube
+  function syncYt(pos) {
+    if (lastVol !== target.volume) {
+      lastVol = target.volume;
+      yt.setVolume(target.volume);
+      if (target.volume === 0) yt.mute(); else yt.unMute();
+    }
+
+    const st = yt.getPlayerState(); // -1 ยังไม่เริ่ม, 0 จบ, 1 เล่น, 2 หยุด, 3 buffer, 5 cued
+    const dur = yt.getDuration();
     if (dur > 0 && pos >= dur - 0.5) {
-      if (st === 1 || st === 3) player.pauseVideo();
+      if (st === 1 || st === 3) yt.pauseVideo();
       return;
     }
 
     const cooled = Date.now() - lastSeek > SEEK_COOLDOWN;
+    const seek = (p) => { lastSeek = Date.now(); yt.seekTo(p, true); };
     if (target.playing) {
       if (st === 1 || st === 3) {
-        if (cooled && Math.abs(player.getCurrentTime() - pos) > DRIFT) seek(pos);
+        if (cooled && Math.abs(yt.getCurrentTime() - pos) > DRIFT) seek(pos);
       } else if (st === -1) {
-        player.playVideo();
+        yt.playVideo();
       } else { // 0, 2, 5
         seek(pos);
-        player.playVideo();
+        yt.playVideo();
       }
     } else {
-      if (st === 1 || st === 3) player.pauseVideo();
-      if (cooled && Math.abs(player.getCurrentTime() - pos) > 0.5) seek(pos);
+      if (st === 1 || st === 3) yt.pauseVideo();
+      if (cooled && Math.abs(yt.getCurrentTime() - pos) > 0.5) seek(pos);
     }
+  }
+
+  // ---------- รวม
+  function show(kind) {
+    ytEl.style.display = kind === 'yt' ? 'block' : 'none';
+    vid.style.display = kind === 'file' ? 'block' : 'none';
+    if (kind !== 'file' && !vid.paused) vid.pause();
+    if (kind !== 'yt' && ytReady) { try { yt.pauseVideo(); } catch (e) {} }
+  }
+
+  function sync() {
+    if (!target) return;
+    const kind = target.kind === 'file' ? 'file' : 'yt';
+    if (kind === 'yt' && !ytReady) return;
+
+    const pos = expected();
+    const key = kind + ':' + target.video;
+
+    if (current !== key) {
+      current = key;
+      lastVol = null;
+      show(kind);
+      if (kind === 'file') {
+        loadFile(target.video, pos);
+        syncFile(pos);
+      } else {
+        if (target.playing) yt.loadVideoById({ videoId: target.video, startSeconds: pos });
+        else yt.cueVideoById({ videoId: target.video, startSeconds: pos });
+        lastSeek = Date.now();
+      }
+      return;
+    }
+
+    if (kind === 'file') syncFile(pos); else syncYt(pos);
   }
 
   window.addEventListener('message', (e) => {
     const d = e.data;
     if (!d || d.type !== 'state') return;
-    target = { video: d.video, pos: d.pos, playing: d.playing, volume: d.volume, t: Date.now() };
+    target = { video: d.video, kind: d.kind, pos: d.pos, playing: d.playing, volume: d.volume, t: Date.now() };
     sync();
   });
 
   setInterval(sync, 1000);
 
   function onYouTubeIframeAPIReady() {
-    player = new YT.Player('player', {
+    yt = new YT.Player('yt', {
       width: '100%', height: '100%',
       playerVars: { origin: location.origin, controls: 0, disablekb: 1, modestbranding: 1, rel: 0, iv_load_policy: 3, playsinline: 1, fs: 0 },
       events: {
-        onReady: () => { ready = true; sync(); },
+        onReady: () => { ytReady = true; sync(); },
         onStateChange: () => sync(),
       },
     });
